@@ -7,37 +7,37 @@ const config = require('../config/google-sheets.config');
 const setSheetRoutes = (app) => {
     const router = express.Router();
 
-    // Middleware: Authentication check
+    // --- Authentication Middleware ---
     const authMiddleware = (req, res, next) => {
+        // 對於 OPTIONS (Preflight) 請求，直接放行，否則瀏覽器會被 CORS 擋住
+        if (req.method === 'OPTIONS') return next();
+
         const authHeader = req.headers.authorization;
         if (!authHeader) {
-            return res.status(401).json({ ok: false, error: { message: '需登入才能使用' } });
+            return res.status(401).json({ ok: false, error: { message: 'Missing Authorization header' } });
         }
 
         try {
-            // Decode "Basic base64encodedstring"
             const b64auth = authHeader.split(' ')[1];
             const [user, password] = Buffer.from(b64auth, 'base64').toString().split(':');
 
             if (!user || !password) throw new Error();
 
-            // Check against env variable: USER_SEARCH_PWD
-            // user name from client might be lowercase, env is UPPERCASE
             const envVarName = `USER_${user.toUpperCase()}_PWD`;
             const validPassword = process.env[envVarName];
 
             if (validPassword && validPassword === password) {
-                // Attach user info if needed
                 req.user = user;
                 next();
             } else {
-                return res.status(401).json({ ok: false, error: { message: '帳號或密碼錯誤' } });
+                return res.status(401).json({ ok: false, error: { message: 'Invalid credentials' } });
             }
         } catch (e) {
-            return res.status(401).json({ ok: false, error: { message: '驗證格式錯誤' } });
+            return res.status(401).json({ ok: false, error: { message: 'Auth format error' } });
         }
     };
 
+    // --- Setup Dependencies ---
     const auth = new GoogleAuth({
         credentials: {
             client_email: config.auth.client_email,
@@ -45,15 +45,32 @@ const setSheetRoutes = (app) => {
         },
         scopes: config.scopes,
     });
-
     const googleSheetsService = new GoogleSheetsService(auth);
     const workoutController = new WorkoutController(googleSheetsService);
 
-    // Apply auth middleware to all routes on this router
+    // Apply Middleware
     router.use(authMiddleware);
 
-    // New action-based route for frontend compatibility
-    router.post('/', workoutController.handleAction.bind(workoutController));
+    // --- Routes (RESTful) ---
+
+    // History & Sessions
+    router.get('/history', (req, res) => workoutController.getHistory(req, res));
+    router.get('/sessions/:id', (req, res) => workoutController.getSessionDetail(req, res)); // Previous "history.detail"
+    
+    // Session Actions
+    router.post('/sessions', (req, res) => workoutController.startSession(req, res));
+    router.put('/sessions/:id/end', (req, res) => workoutController.endSession(req, res));
+    router.delete('/sessions/:id', (req, res) => workoutController.deleteSession(req, res));
+
+    // Exercises
+    router.get('/exercises', (req, res) => workoutController.getExercises(req, res));
+    router.post('/exercises', (req, res) => workoutController.createExercise(req, res));
+    router.get('/exercises/:exerciseId/last-set', (req, res) => workoutController.getLastSetForExercise(req, res));
+
+    // Sets
+    router.post('/sets', (req, res) => workoutController.createSet(req, res));
+    router.put('/sets/:id', (req, res) => workoutController.updateSet(req, res));
+    router.delete('/sets/:id', (req, res) => workoutController.deleteSet(req, res));
 
     app.use('/api', router);
 };
