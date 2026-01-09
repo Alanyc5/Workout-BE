@@ -18,6 +18,7 @@ class WorkoutController {
         try {
             const newSession = {
                 id: 'sess_' + Date.now(),
+                userId: req.user || 'Unknown',
                 startAt: new Date().toISOString(),
                 endAt: null,
                 note: null
