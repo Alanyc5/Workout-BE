@@ -3,6 +3,7 @@ const parseSet = (s) => ({
     weight: Number(s.weight),
     reps: Number(s.reps),
     orderInExercise: Number(s.orderInExercise),
+    duration: s.duration ? Number(s.duration) : null,
     isDeleted: s.isDeleted === 'TRUE' || s.isDeleted === true
 });
 
@@ -33,8 +34,11 @@ class WorkoutController {
     async endSession(req, res) {
         try {
             const { id } = req.params;
-            // 允許 body 帶入額外資訊 (未實作，但預留擴充性)
-            const update = { endAt: new Date().toISOString() };
+            const { note } = req.body || {};
+            const update = { 
+                endAt: new Date().toISOString(),
+                note: note || ''
+            };
             const result = await this._updateRow('Sessions', id, update);
             res.json({ ok: true, data: result });
         } catch (error) {
@@ -65,11 +69,19 @@ class WorkoutController {
 
     async getHistory(req, res) {
         try {
+            const { userId: filterUserId } = req.query;
+            const currentUserId = req.user;
             const sessions = await this.service.getSheetData(this.spreadsheetId, 'Sessions');
             const allSets = await this.service.getSheetData(this.spreadsheetId, 'Sets');
             
-            // 只回傳已結束的 sessions
+            // 如果沒帶 filterUserId，預設應該只有該使用者的？
+            // 或是依據使用者的需求，首頁要看到所有人。
+            // 我們這裡修改為：如果有帶 userId 參數則過濾，否則回傳所有人。
             let result = sessions.filter(s => s.endAt && s.endAt !== '');
+            
+            if (filterUserId && filterUserId !== 'All') {
+                result = result.filter(s => s.userId === filterUserId);
+            }
             
             // 過濾掉沒有任何運動的 session
             result = result.filter(session => {
@@ -92,10 +104,11 @@ class WorkoutController {
     async getSessionDetail(req, res) {
         try {
             const { id } = req.params;
+            const userId = req.user;
             const sessions = await this.service.getSheetData(this.spreadsheetId, 'Sessions');
-            const session = sessions.find(s => s.id === id);
+            const session = sessions.find(s => s.id === id && s.userId === userId);
             
-            if (!session) return res.status(404).json({ ok: false, error: { message: 'Session not found' } });
+            if (!session) return res.status(404).json({ ok: false, error: { message: 'Session not found or access denied' } });
 
             const allSets = await this.service.getSheetData(this.spreadsheetId, 'Sets');
             // 過濾並解析 Sets
@@ -105,12 +118,18 @@ class WorkoutController {
                 .filter(s => !s.isDeleted); // 過濾掉軟刪除的
 
             const allExercises = await this.service.getSheetData(this.spreadsheetId, 'Exercises');
+            const allNotes = await this.service.getSheetData(this.spreadsheetId, 'ExerciseNotes').catch(() => []);
             
             // 組合 Exercises
             const exIds = Array.from(new Set(sets.map(s => s.exerciseId)));
             const exercises = exIds.map(eid => {
                 const ex = allExercises.find(e => e.id === eid);
-                return { ...(ex || { id: eid, name: 'Unknown' }), sets: [] };
+                const noteObj = allNotes.find(n => n.sessionId === id && n.exerciseId === eid);
+                return { 
+                    ...(ex || { id: eid, name: 'Unknown' }), 
+                    sets: [],
+                    note: noteObj ? noteObj.note : null
+                };
             });
 
             const result = { ...session, sets, exercises };
@@ -124,12 +143,13 @@ class WorkoutController {
 
     async createExercise(req, res) {
         try {
-            const { name } = req.body;
+            const { name, type = 'strength' } = req.body;
             if (!name) throw new Error('Exercise name is required');
 
             const newEx = {
                 id: 'ex_' + Date.now(),
                 name: name,
+                type: type,
                 lastUsedAt: new Date().toISOString()
             };
             await this.service.addRow(this.spreadsheetId, 'Exercises', newEx);
@@ -159,11 +179,20 @@ class WorkoutController {
         try {
             const { exerciseId } = req.params;
             const { currentSessionId } = req.query;
+            const userId = req.user; // 從 authMiddleware 取得
+
+            const allSessions = await this.service.getSheetData(this.spreadsheetId, 'Sessions');
+            const userSessionIds = new Set(
+                allSessions
+                    .filter(s => s.userId === userId)
+                    .map(s => s.id)
+            );
 
             const allSets = await this.service.getSheetData(this.spreadsheetId, 'Sets');
-            // 找出該動作的所有 Set，排除目前的 Session
+            // 找出該動作的所有 Set，且必須屬於該使用者的 Session，並排除目前的 Session
             const candidates = allSets.filter(s => 
                 s.exerciseId === exerciseId && 
+                userSessionIds.has(s.sessionId) &&
                 s.sessionId !== currentSessionId
             );
 
@@ -183,7 +212,7 @@ class WorkoutController {
 
     async createSet(req, res) {
         try {
-            const { sessionId, exerciseId, weight, reps, id } = req.body;
+            const { sessionId, exerciseId, weight, reps, unit, duration, id } = req.body;
             
             const allSets = await this.service.getSheetData(this.spreadsheetId, 'Sets');
             const existing = allSets.filter(s => s.sessionId === sessionId && s.exerciseId === exerciseId);
@@ -193,8 +222,10 @@ class WorkoutController {
                 sessionId,
                 exerciseId,
                 orderInExercise: existing.length + 1,
-                weight,
-                reps,
+                weight: weight || 0,
+                reps: reps || 0,
+                unit: unit || 'kg',
+                duration: duration || null,
                 isDeleted: false
             };
             
@@ -220,6 +251,40 @@ class WorkoutController {
 
             const updated = await this._updateRow('Sets', id, updates);
             res.json({ ok: true, data: parseSet(updated) });
+        } catch (error) {
+            this._handleError(res, error);
+        }
+    }
+
+    async updateExerciseNote(req, res) {
+        try {
+            const { id: sessionId, exerciseId } = req.params;
+            const { note } = req.body;
+
+            const allNotes = await this.service.getSheetData(this.spreadsheetId, 'ExerciseNotes').catch(() => []);
+            const existing = allNotes.find(n => n.sessionId === sessionId && n.exerciseId === exerciseId);
+
+            if (existing) {
+                // Find index manually since we don't have a unique 'id' column for ExerciseNotes (unless we add one)
+                // Let's assume we don't want to add an ID column to simplify.
+                // We'll use _updateRowByFilter helper if we had one.
+                // For now, let's just use a row-based update.
+                const rows = await this.service.fetchData(this.spreadsheetId, 'ExerciseNotes!A:Z');
+                const headers = rows[0];
+                const sidIdx = headers.indexOf('sessionId');
+                const eidIdx = headers.indexOf('exerciseId');
+                const noteIdx = headers.indexOf('note');
+
+                const rowIndex = rows.findIndex(r => r[sidIdx] === sessionId && r[eidIdx] === exerciseId);
+                if (rowIndex !== -1) {
+                    const colLetter = String.fromCharCode(65 + noteIdx);
+                    const range = `ExerciseNotes!${colLetter}${rowIndex + 1}`;
+                    await this.service.sendData(this.spreadsheetId, range, [[note]]);
+                }
+            } else {
+                await this.service.addRow(this.spreadsheetId, 'ExerciseNotes', { sessionId, exerciseId, note });
+            }
+            res.json({ ok: true });
         } catch (error) {
             this._handleError(res, error);
         }

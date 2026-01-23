@@ -61,6 +61,7 @@ const setSheetRoutes = (app) => {
     router.post('/sessions', (req, res) => workoutController.startSession(req, res));
     router.put('/sessions/:id/end', (req, res) => workoutController.endSession(req, res));
     router.delete('/sessions/:id', (req, res) => workoutController.deleteSession(req, res));
+    router.put('/sessions/:id/exercises/:exerciseId/note', (req, res) => workoutController.updateExerciseNote(req, res));
 
     // Exercises
     router.get('/exercises', (req, res) => workoutController.getExercises(req, res));
