@@ -104,9 +104,9 @@ class WorkoutController {
     async getSessionDetail(req, res) {
         try {
             const { id } = req.params;
-            const userId = req.user;
             const sessions = await this.service.getSheetData(this.spreadsheetId, 'Sessions');
-            const session = sessions.find(s => s.id === id && s.userId === userId);
+            // 修改：不僅限於自己的記錄，以便查看隊友的
+            const session = sessions.find(s => s.id === id);
             
             if (!session) return res.status(404).json({ ok: false, error: { message: 'Session not found or access denied' } });
 
@@ -124,7 +124,11 @@ class WorkoutController {
             const exIds = Array.from(new Set(sets.map(s => s.exerciseId)));
             const exercises = exIds.map(eid => {
                 const ex = allExercises.find(e => e.id === eid);
-                const noteObj = allNotes.find(n => n.sessionId === id && n.exerciseId === eid);
+                // 修改：相容 sessionid/exerciseid 小寫欄位
+                const noteObj = allNotes.find(n => 
+                    (n.sessionId === id || n.sessionid === id) && 
+                    (n.exerciseId === eid || n.exerciseid === eid)
+                );
                 return { 
                     ...(ex || { id: eid, name: 'Unknown' }), 
                     sets: [],
@@ -262,18 +266,19 @@ class WorkoutController {
             const { note } = req.body;
 
             const allNotes = await this.service.getSheetData(this.spreadsheetId, 'ExerciseNotes').catch(() => []);
-            const existing = allNotes.find(n => n.sessionId === sessionId && n.exerciseId === exerciseId);
+            // 修改：相容 sessionid/exerciseid 小寫欄位
+            const existing = allNotes.find(n => 
+                (n.sessionId === sessionId || n.sessionid === sessionId) && 
+                (n.exerciseId === exerciseId || n.exerciseid === exerciseId)
+            );
 
             if (existing) {
-                // Find index manually since we don't have a unique 'id' column for ExerciseNotes (unless we add one)
-                // Let's assume we don't want to add an ID column to simplify.
-                // We'll use _updateRowByFilter helper if we had one.
-                // For now, let's just use a row-based update.
                 const rows = await this.service.fetchData(this.spreadsheetId, 'ExerciseNotes!A:Z');
                 const headers = rows[0];
-                const sidIdx = headers.indexOf('sessionId');
-                const eidIdx = headers.indexOf('exerciseId');
-                const noteIdx = headers.indexOf('note');
+                // 修改：不區分大小寫尋找欄位索引
+                const sidIdx = headers.findIndex(h => h.toLowerCase() === 'sessionid');
+                const eidIdx = headers.findIndex(h => h.toLowerCase() === 'exerciseid');
+                const noteIdx = headers.findIndex(h => h.toLowerCase() === 'note');
 
                 const rowIndex = rows.findIndex(r => r[sidIdx] === sessionId && r[eidIdx] === exerciseId);
                 if (rowIndex !== -1) {
@@ -282,7 +287,12 @@ class WorkoutController {
                     await this.service.sendData(this.spreadsheetId, range, [[note]]);
                 }
             } else {
-                await this.service.addRow(this.spreadsheetId, 'ExerciseNotes', { sessionId, exerciseId, note });
+                // 修改：同時傳入駝峰與小寫 key，確保 addRow 能對應到 Sheet 中的欄位
+                await this.service.addRow(this.spreadsheetId, 'ExerciseNotes', { 
+                    sessionId, sessionid: sessionId, 
+                    exerciseId, exerciseid: exerciseId, 
+                    note 
+                });
             }
             res.json({ ok: true });
         } catch (error) {

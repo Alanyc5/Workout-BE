@@ -1,6 +1,7 @@
 const express = require('express');
 const { GoogleAuth } = require('google-auth-library');
 const WorkoutController = require('../controllers/workoutController');
+const MotivationController = require('../controllers/motivationController');
 const GoogleSheetsService = require('../services/googleSheetsService');
 const config = require('../config/google-sheets.config');
 
@@ -47,11 +48,17 @@ const setSheetRoutes = (app) => {
     });
     const googleSheetsService = new GoogleSheetsService(auth);
     const workoutController = new WorkoutController(googleSheetsService);
+    const motivationController = new MotivationController(googleSheetsService);
 
     // Apply Middleware
     router.use(authMiddleware);
 
     // --- Routes (RESTful) ---
+
+    // Motivations
+    router.get('/motivations', (req, res) => motivationController.getMotivations(req, res));
+    router.post('/motivations', (req, res) => motivationController.createMotivation(req, res));
+    router.post('/motivations/:id/react', (req, res) => motivationController.toggleReaction(req, res));
 
     // History & Sessions
     router.get('/history', (req, res) => workoutController.getHistory(req, res));
